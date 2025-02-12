@@ -1,12 +1,23 @@
-## AeroSpaceLua
+# AeroSpaceLua
 
-This essentially just connects to the AeroSpace server and sends commands directly to it as opposed to going through the CLI.
+This essentially just connects to the AeroSpace server and sends commands
+directly to it as opposed to going through the CLI.
 
-### Usage
+## Requirements
 
-see example in [`example.lua`](example.lua)
+Requires [cjson](https://github.com/efelix/lua-cjson) and
+[posix](https://github.com/luaposix/luaposix). Install them either with Luarocks
+or manually (instructions can be found in their respective repositories).
 
-how to import/initialize below
+```bash
+luarocks install lua-cjson posix
+```
+
+## Usage
+
+See example in [`example.lua`](example.lua)
+
+How to import/initialize below
 
 ```lua
 -- init.lua
