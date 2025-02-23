@@ -10,7 +10,7 @@ Requires [cjson](https://github.com/efelix/lua-cjson) and
 or manually (instructions can be found in their respective repositories).
 
 ```bash
-luarocks install lua-cjson posix
+luarocks install lua-cjson luaposix
 ```
 
 ## Usage
