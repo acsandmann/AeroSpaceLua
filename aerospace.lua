@@ -2,315 +2,126 @@
 -- @module Aerospace
 -- @copyright 2025
 -- @license MIT
-local cjson = require "cjson"
-local simdjson = require "simdjson"
-local socket = require("posix.sys.socket")
-local unistd = require("posix.unistd")
 
-local json = cjson.new()
-local username = os.execute("id -un")
+local socket               = require("posix.sys.socket")
+local unistd               = require("posix.unistd")
+local cjson                = require("cjson")
+local simdjson             = require("simdjson")
 
-local DEFAULT_CONFIG = {
-	SOCKET_PATH = string.format("/tmp/bobko.aerospace-%s.sock", username),
-	MAX_BUFFER_SIZE = 2048,
-	EXTENDED_BUFFER_SIZE = 4096
+local DEFAULT              = {
+	SOCK_FMT = "/tmp/bobko.aerospace-%s.sock",
+	MAX_BUF  = 2048,
+	EXT_BUF  = 4096,
+}
+local ERR                  = {
+	SOCKET   = "socket error",
+	NOT_INIT = "socket not connected",
+	JSON     = "failed to decode JSON",
 }
 
---- Aerospace client class
--- @type Aerospace
-local Aerospace = {}
-Aerospace.__index = Aerospace
+local AF_UNIX, SOCK_STREAM = socket.AF_UNIX, socket.SOCK_STREAM
+local write, read, close   = unistd.write, unistd.read, unistd.close
+local encode               = cjson.encode
 
---- Error messages
-local ERROR_MESSAGES = {
-	SOCKET_CREATE = "Failed to create Unix domain socket",
-	SOCKET_CONNECT = "Failed to connect to socket at %s",
-	SOCKET_SEND = "Failed to send data through socket",
-	SOCKET_RECEIVE = "Failed to receive data from socket",
-	SOCKET_CLOSE = "Failed to close socket connection",
-	SOCKET_NOT_CONNECTED = "Socket is not connected",
-	JSON_DECODE = "Failed to decode JSON response",
-	INVALID_WORKSPACE = "Invalid workspace identifier provided"
-}
-
---- Creates a new Aerospace client and connects to the Unix domain socket.
--- @param socketPath (string|nil) Optional path to the Aerospace Unix socket
--- @return (table) New Aerospace client instance
--- @raise (error) If socket creation or connection fails
-function Aerospace.new(socketPath)
-	local self = setmetatable({}, Aerospace)
-	self.socketPath = socketPath or DEFAULT_CONFIG.SOCKET_PATH
-
-	local fd, err = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0)
-	if not fd then
-		error(string.format("%s: %s", ERROR_MESSAGES.SOCKET_CREATE, tostring(err)))
+local use_simd             = true
+local function decode(str)
+	if use_simd then
+		local ok, val = pcall(simdjson.parse, str)
+		if ok then return val end
+		use_simd = false
 	end
-
-	self.fd = fd
-
-	local addr = {
-		family = socket.AF_UNIX,
-		path = self.socketPath
-	}
-
-	if socket.connect(self.fd, addr) ~= 0 then
-		unistd.close(fd)
-		error(string.format(ERROR_MESSAGES.SOCKET_CONNECT, self.socketPath))
-	end
-
-	return self
+	local ok, val = pcall(cjson.decode, str)
+	if not ok then error(ERR.JSON .. ": " .. tostring(val)) end
+	return val
 end
 
---- Reconnects to the Unix domain socket
--- @raise (error) If socket creation or connection fails
-function Aerospace:reconnect()
-	if self:is_initialized() then
-		self:close()
+local function connect(path)
+	local fd, err = socket.socket(AF_UNIX, SOCK_STREAM, 0)
+	if not fd then error(ERR.SOCKET .. ": " .. tostring(err)) end
+	if socket.connect(fd, { family = AF_UNIX, path = path }) ~= 0 then
+		close(fd); error("cannot connect to " .. path)
 	end
-
-	local fd, err = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0)
-	if not fd then
-		error(string.format("%s: %s", ERROR_MESSAGES.SOCKET_CREATE, tostring(err)))
-	end
-
-	self.fd = fd
-
-	local addr = {
-		family = socket.AF_UNIX,
-		path = self.socketPath
-	}
-
-	if socket.connect(self.fd, addr) ~= 0 then
-		unistd.close(fd)
-		error(string.format(ERROR_MESSAGES.SOCKET_CONNECT, self.socketPath))
-	end
+	return fd
 end
 
---- Checks if the client is initialized and connected
--- @return (boolean) True if connected, false otherwise
-function Aerospace:is_initialized()
-	return self.fd ~= nil
+local function stdout(raw)
+	local ok, doc = pcall(simdjson.open, raw)
+	if not ok then error(ERR.JSON .. ": " .. tostring(doc)) end
+	return doc:atPointer("/stdout")
 end
 
---- Sends a query through the socket
--- @param query (table) Query to send
--- @return (number) Number of bytes sent
--- @raise (error) If sending fails
-function Aerospace:send(query)
-	if not self:is_initialized() then
-		error(ERROR_MESSAGES.SOCKET_NOT_CONNECTED)
+local Aerospace = {}; Aerospace.__index = Aerospace
+
+function Aerospace.new(path)
+	if not path then
+		local username = io.popen("id -un"):read("*l")
+		path = DEFAULT.SOCKET_PATH_REG:format(username)
 	end
 
-	local encoded_query = json.encode(query)
-	encoded_query = encoded_query .. "\n"
-	local bytes_sent, err = unistd.write(self.fd, encoded_query)
-
-	if not bytes_sent then
-		error(string.format("%s: %s", ERROR_MESSAGES.SOCKET_SEND, tostring(err)))
-	end
-
-	return bytes_sent
+	return setmetatable({ sockPath = path, fd = connect(path) }, Aerospace)
 end
 
---- Receives data from the socket
--- @param maxBytes (number|nil) Optional maximum bytes to receive
--- @return (string) Received data
--- @raise (error) If receiving fails
-function Aerospace:receive(maxBytes)
-	if not self:is_initialized() then
-		error(ERROR_MESSAGES.SOCKET_NOT_CONNECTED)
-	end
-
-	maxBytes = maxBytes or DEFAULT_CONFIG.MAX_BUFFER_SIZE
-	local response, err = unistd.read(self.fd, maxBytes)
-
-	if not response then
-		error(string.format("%s: %s", ERROR_MESSAGES.SOCKET_RECEIVE, tostring(err)))
-	end
-
-	return response
-end
-
---- Closes the socket connection
--- @raise (error) If closing fails
 function Aerospace:close()
-	if self:is_initialized() then
-		local ok, err = unistd.close(self.fd)
-		if ok ~= 0 then
-			error(string.format("%s: %s", ERROR_MESSAGES.SOCKET_CLOSE, tostring(err)))
-		end
-		self.fd = nil
+	if self.fd then
+		close(self.fd); self.fd = nil
 	end
-end
-
---- parse stdout from aerospace response
--- @param response (string) Raw response from socket
--- @return (string) stdout from response
-local function decode_response(response)
-	local success, result = pcall(simdjson.open, response)
-	if not success then
-		error(string.format("%s: %s", ERROR_MESSAGES.JSON_DECODE, tostring(result)))
-	end
-	return result:atPointer("/stdout")
-end
-
---- parse json data
--- @param data (string) JSON data to decode
--- @return (table) Decoded JSON data
-local function decode(data)
-	local success, result = pcall(json.decode, data)
-	if not success then
-		error(string.format("%s: %s", ERROR_MESSAGES.JSON_DECODE, tostring(result)))
-	end
-	return result
-end
-
---- Lists all available applications
--- @param callback (function|nil) Optional callback function to process results
--- @return (table) List of applications if no callback provided
-function Aerospace:list_apps(callback)
-	local query = {
-		command = "",
-		args = { "list-apps", "--json" },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.MAX_BUFFER_SIZE))
-	local apps = decode(response)
-
-	if callback then
-		return callback(apps)
-	end
-	return apps
-end
-
---- Queries all workspaces
--- @param callback (function|nil) Optional callback function to process results
--- @return (table) Workspace information if no callback provided
-function Aerospace:query_workspaces(callback)
-	local query = {
-		command = "",
-		args = { "list-workspaces", "--all", "--format", "%{workspace}%{monitor-appkit-nsscreen-screens-id}", "--json" },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.EXTENDED_BUFFER_SIZE))
-	local workspaces = decode(response)
-
-	if callback then
-		return callback(workspaces)
-	end
-	return workspaces
-end
-
---- Lists the current workspace
--- @param callback (function|nil) Optional callback function to process results
--- @return (string) Current workspace information if no callback provided
-function Aerospace:list_current(callback)
-	local query = {
-		command = "",
-		args = { "list-workspaces", "--focused" },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.MAX_BUFFER_SIZE))
-	if callback then
-		return callback(response)
-	end
-	return response
-end
-
---- Lists windows in a specific workspace
--- @param space (string) Workspace identifier
--- @param callback (function|nil) Optional callback function to process results
--- @return (table) Window information if no callback provided
--- @raise (error) If workspace identifier is invalid
-function Aerospace:list_windows(space, callback)
-	if not space or type(space) ~= "string" then
-		error(ERROR_MESSAGES.INVALID_WORKSPACE)
-	end
-
-	local query = {
-		command = "",
-		args = { "list-windows", "--workspace", space, "--json" },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.MAX_BUFFER_SIZE))
-
-	if callback then
-		return callback(response)
-	end
-	return response
-end
-
---- Gets the focused window
--- @param callback (function|nil) Optional callback function to process results
--- @return (table) Window information if no callback provided
--- @raise (error) If aerospace fails to retrieve the focused window
-function Aerospace:focused_window(callback)
-	local query = {
-		command = "",
-		args = { "list-windows", "--focused", "--json" },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.MAX_BUFFER_SIZE))
-
-	if callback then
-		return callback(response)
-	end
-	return response
-end
-
---- Focuses a workspace
--- @param workspace (string) Workspace identifier
--- @return (table) Response from the server
--- @raise (error) If workspace identifier is invalid
-function Aerospace:workspace(workspace)
-	if not workspace or type(workspace) ~= "string" then
-		error(ERROR_MESSAGES.INVALID_WORKSPACE)
-	end
-
-	local query = {
-		command = "",
-		args = { "workspace", workspace },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.MAX_BUFFER_SIZE))
-
-	return response
-end
-
---- Lists all windows
--- @param callback (function|nil) Optional callback function to process results
--- @return (table) List of windows if no callback provided
--- @raise (error) If aerospace fails while retrieving window list
-function Aerospace:list_all_windows(callback)
-	local query = {
-		command = "",
-		args = { "list-windows", "--all", "--json", "--format", "%{window-id}%{app-name}%{window-title}%{workspace}" },
-		stdin = ""
-	}
-
-	self:send(query)
-	local response = decode_response(self:receive(DEFAULT_CONFIG.EXTENDED_BUFFER_SIZE))
-	local windows = decode(response)
-
-	if callback then
-		return callback(windows)
-	end
-	return windows
 end
 
 Aerospace.__gc = Aerospace.close
 
-return Aerospace
+function Aerospace:reconnect()
+	self:close(); self.fd = connect(self.sockPath)
+end
 
+function Aerospace:is_initialized() return self.fd ~= nil end
+
+local PAYLOAD_TMPL = '{"command":"","args":%s,"stdin":""}\n'
+function Aerospace:_query(args, want_json, big)
+	if not self:is_initialized() then error(ERR.NOT_INIT) end
+	local payload = PAYLOAD_TMPL:format(encode(args))
+	write(self.fd, payload)
+
+	local raw = read(self.fd, big and DEFAULT.EXT_BUF or DEFAULT.MAX_BUF)
+	local out = stdout(raw)
+	return want_json and decode(out) or out
+end
+
+local function passthrough(self, argtbl, json, big, cb)
+	local res = self:_query(argtbl, json, big)
+	return cb and cb(res) or res
+end
+
+function Aerospace:list_apps(cb)
+	return passthrough(self, { "list-apps", "--json" }, true, nil, cb)
+end
+
+function Aerospace:query_workspaces(cb)
+	return passthrough(self, {
+		"list-workspaces", "--all",
+		"--format", "%{workspace-is-focused}%{workspace-is-visible}%{workspace}%{monitor-appkit-nsscreen-screens-id}",
+		"--json" }, true, true, cb)
+end
+
+function Aerospace:list_current(cb)
+	return passthrough(self, { "list-workspaces", "--focused" }, false, nil, cb)
+end
+
+function Aerospace:list_windows(space, cb)
+	return passthrough(self, { "list-windows", "--workspace", space, "--json" }, false, nil, cb)
+end
+
+function Aerospace:focused_window(cb)
+	return passthrough(self, { "list-windows", "--focused", "--json" }, false, nil, cb)
+end
+
+function Aerospace:workspace(ws)
+	return self:_query({ "workspace", ws }, false)
+end
+
+function Aerospace:list_all_windows(cb)
+	return passthrough(self, {
+		"list-windows", "--all", "--json",
+		"--format", "%{window-id}%{app-name}%{window-title}%{workspace}" }, true, true, cb)
+end
+
+return Aerospace

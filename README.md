@@ -1,7 +1,6 @@
 # AeroSpaceLua
 
-This essentially just connects to the AeroSpace server and sends commands
-directly to it as opposed to going through the CLI.
+This just connects to the AeroSpace server and sends commands directly to it as opposed to going through the CLI.
 
 ## Requirements
 
@@ -22,9 +21,9 @@ How to import/initialize below
 ```lua
 -- init.lua
 local Aerospace = require("aerospace")
-local aerospace = Aerospace.new() -- it finds socket on its own
+local aerospace = Aerospace.new() -- it finds the socket on its own
 while not aerospace:is_initialized() do
-    os.execute("sleep 0.1") -- wait for connection, not the best workaround, i am not a lua professional
+    os.execute("sleep 0.1") -- wait for connection, not the best workaround
 end
 
 require("install.sbar")
