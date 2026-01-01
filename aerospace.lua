@@ -91,6 +91,11 @@ local function passthrough(self, argtbl, json, big, cb)
 	return cb and cb(res) or res
 end
 
+function Aerospace:list_modes(current_only, cb)
+	local args = current_only and { "list-modes", "--current" } or { "list-modes" }
+	return passthrough(self, args, false, nil, cb)
+end
+
 function Aerospace:list_apps(cb)
 	return passthrough(self, { "list-apps", "--json" }, true, nil, cb)
 end
