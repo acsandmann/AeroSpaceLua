@@ -81,7 +81,19 @@ function Aerospace:_query(args, want_json, big)
 	local payload = PAYLOAD_TMPL:format(encode(args))
 	write(self.fd, payload)
 
-	local raw = read(self.fd, big and DEFAULT.EXT_BUF or DEFAULT.MAX_BUF)
+	-- Read all available data from socket in chunks
+    local chunks = {}
+    local chunk_size = big and DEFAULT.EXT_BUF or DEFAULT.MAX_BUF
+    repeat
+        local chunk = read(self.fd, chunk_size)
+        if chunk and #chunk > 0 then
+            table.insert(chunks, chunk)
+        else
+            break
+        end
+    until #chunk < chunk_size  -- Stop when we get a partial chunk (last chunk)
+
+    local raw = table.concat(chunks)
 	local out = stdout(raw)
 	return want_json and decode(out) or out
 end
