@@ -55,7 +55,7 @@ local Aerospace = {}; Aerospace.__index = Aerospace
 function Aerospace.new(path)
 	if not path then
 		local username = io.popen("id -un"):read("*l")
-		path = DEFAULT.SOCKET_PATH_REG:format(username)
+		path = DEFAULT.SOCK_FMT:format(username)
 	end
 
 	return setmetatable({ sockPath = path, fd = connect(path) }, Aerospace)
